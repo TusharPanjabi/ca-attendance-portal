@@ -6,22 +6,36 @@ import { initializeApp, deleteApp } from "firebase/app";
 import { getAuth, createUserWithEmailAndPassword, signOut } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
 import { auth, db, firebaseConfig } from "../firebase";
-import { Users, Download, Smartphone, Save, IndianRupee, UserPlus, LogOut } from "lucide-react";
+import {
+  Users, Download, Smartphone, Save, IndianRupee,
+  UserPlus, LogOut, BellRing
+} from "lucide-react";
 
 export default function AdminDashboard() {
   const [staffList, setStaffList] = useState([]);
   const [logs, setLogs] = useState([]);
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ role: "INTERN", rate: 0, overtimeMultiplier: 1.5 });
+  const [editForm, setEditForm] = useState({
+    role: "INTERN",
+    rate: 0,
+    overtimeMultiplier: 1.5,
+    shiftStartTime: "10:00",
+    shiftEndTime: "18:00"
+  });
 
-  // New Staff Onboarding State
+  // Admin-Only Checkout Salary Popup State
+  const [salaryPopup, setSalaryPopup] = useState(null);
+
+  // New Staff Onboarding State with Custom Schedule
   const [newStaff, setNewStaff] = useState({
     name: "",
     email: "",
     password: "",
     role: "INTERN",
     rate: 150,
-    overtimeMultiplier: 1.5
+    overtimeMultiplier: 1.5,
+    shiftStartTime: "10:00",
+    shiftEndTime: "18:00"
   });
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
@@ -33,7 +47,16 @@ export default function AdminDashboard() {
 
     const qLogs = query(collection(db, "attendance_logs"), orderBy("checkIn", "desc"));
     const unsubLogs = onSnapshot(qLogs, (snap) => {
-      setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const updatedLogs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setLogs(updatedLogs);
+
+      // Trigger Admin-Only Salary Popup for newly completed checkouts
+      const unnotifiedCheckout = updatedLogs.find(
+        (l) => l.checkOut !== null && l.adminNotified === false
+      );
+      if (unnotifiedCheckout) {
+        setSalaryPopup(unnotifiedCheckout);
+      }
     });
 
     return () => {
@@ -42,7 +65,15 @@ export default function AdminDashboard() {
     };
   }, []);
 
-  // Create Staff Account via Secondary Firebase App (keeps Admin logged in)
+  const dismissSalaryPopup = async () => {
+    if (salaryPopup) {
+      await updateDoc(doc(db, "attendance_logs", salaryPopup.id), {
+        adminNotified: true
+      });
+      setSalaryPopup(null);
+    }
+  };
+
   const handleCreateStaff = async (e) => {
     e.preventDefault();
     setCreating(true);
@@ -58,6 +89,8 @@ export default function AdminDashboard() {
         name: newStaff.name,
         email: newStaff.email,
         role: newStaff.role,
+        shiftStartTime: newStaff.shiftStartTime,
+        shiftEndTime: newStaff.shiftEndTime,
         boundDeviceId: null,
         payConfig: {
           type: newStaff.role === "INTERN" ? "HOURLY" : "MONTHLY_PRO_RATA",
@@ -67,8 +100,17 @@ export default function AdminDashboard() {
         }
       });
       await signOut(secondaryAuth);
-      setNewStaff({ name: "", email: "", password: "", role: "INTERN", rate: 150, overtimeMultiplier: 1.5 });
-      alert("Staff account created successfully!");
+      setNewStaff({
+        name: "",
+        email: "",
+        password: "",
+        role: "INTERN",
+        rate: 150,
+        overtimeMultiplier: 1.5,
+        shiftStartTime: "10:00",
+        shiftEndTime: "18:00"
+      });
+      alert("Staff account & schedule created!");
     } catch (err) {
       alert("Error creating staff: " + err.message);
     } finally {
@@ -82,13 +124,17 @@ export default function AdminDashboard() {
     setEditForm({
       role: staff.role || "INTERN",
       rate: staff.payConfig?.rate || 0,
-      overtimeMultiplier: staff.payConfig?.overtimeMultiplier || 1.5
+      overtimeMultiplier: staff.payConfig?.overtimeMultiplier || 1.5,
+      shiftStartTime: staff.shiftStartTime || "10:00",
+      shiftEndTime: staff.shiftEndTime || "18:00"
     });
   };
 
   const handleSavePayConfig = async (staffId) => {
     await updateDoc(doc(db, "users", staffId), {
       role: editForm.role,
+      shiftStartTime: editForm.shiftStartTime,
+      shiftEndTime: editForm.shiftEndTime,
       payConfig: {
         type: editForm.role === "INTERN" ? "HOURLY" : "MONTHLY_PRO_RATA",
         rate: Number(editForm.rate),
@@ -101,13 +147,14 @@ export default function AdminDashboard() {
 
   const resetDeviceLock = async (staffId) => {
     await updateDoc(doc(db, "users", staffId), { boundDeviceId: null });
-    alert("Device lock cleared. Staff can bind their new phone on next login.");
+    alert("Device lock cleared.");
   };
 
   const exportCSV = () => {
-    const headers = ["Date,Name,Category,Minutes Worked,Calculated Salary (INR)"];
+    const headers = ["Date,Name,Category,Late Minutes,Minutes Worked,Calculated Salary (INR)"];
     const rows = logs.map(
-      (l) => `${l.date},"${l.userName}",${l.role},${l.totalMinutes},${l.calculatedPay}`
+      (l) =>
+        `${l.date},"${l.userName}",${l.role},${l.lateMinutes || 0},${l.totalMinutes},${l.calculatedPay}`
     );
     const blob = new Blob([headers.concat(rows).join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -121,12 +168,46 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-100 p-6">
+      {/* ADMIN-ONLY SALARY CALCULATION POPUP */}
+      {salaryPopup && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border-2 border-emerald-500 text-center">
+            <div className="w-12 h-12 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center mx-auto mb-3">
+              <BellRing className="w-6 h-6" />
+            </div>
+            <span className="text-xs font-bold uppercase tracking-wider text-emerald-700">
+              Admin-Only Payroll Alert
+            </span>
+            <h3 className="text-xl font-bold text-slate-900 mt-1">
+              {salaryPopup.userName} Checked Out
+            </h3>
+            <p className="text-sm text-slate-500 mt-1">
+              Category: {salaryPopup.role} • Worked: {salaryPopup.totalMinutes} mins
+            </p>
+            <div className="my-4 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+              <span className="text-xs text-emerald-700 block font-semibold">
+                Calculated Variable Salary (Hidden from Staff)
+              </span>
+              <span className="text-3xl font-extrabold text-emerald-900">
+                ₹{salaryPopup.calculatedPay?.toFixed(2)}
+              </span>
+            </div>
+            <button
+              onClick={dismissSalaryPopup}
+              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded-xl text-sm"
+            >
+              Confirm & Close
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Header */}
         <div className="flex flex-wrap justify-between items-center bg-white p-6 rounded-2xl shadow-sm border">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">CA Firm Attendance & Variable Payroll</h1>
-            <p className="text-sm text-slate-500">Manage Intern Stipends, Full-Time Salaries & Live Logs</p>
+            <p className="text-sm text-slate-500">Admin-Only Salary Visibility • Custom Staff Schedules</p>
           </div>
           <div className="flex items-center gap-4">
             <div className="bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-xl">
@@ -149,13 +230,13 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Add New Intern or Full-Time Employee */}
+        {/* Register New Staff with Custom Shift Timing */}
         <div className="bg-white rounded-2xl shadow-sm border p-6">
           <div className="flex items-center gap-2 font-bold text-slate-800 mb-4">
             <UserPlus className="w-5 h-5 text-indigo-600" />
-            <span>Register New Intern / Full-Time Employee</span>
+            <span>Register New Intern / Full-Time Staff & Schedule</span>
           </div>
-          <form onSubmit={handleCreateStaff} className="grid grid-cols-1 md:grid-cols-6 gap-3">
+          <form onSubmit={handleCreateStaff} className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <input
               type="text"
               required
@@ -188,6 +269,29 @@ export default function AdminDashboard() {
               <option value="INTERN">Option 1: Intern (Hourly)</option>
               <option value="EMPLOYEE">Option 2: Full-Time Job</option>
             </select>
+
+            <div className="flex items-center gap-2 border rounded-xl px-3 py-1.5 text-sm">
+              <span className="text-xs text-slate-500">Start:</span>
+              <input
+                type="time"
+                required
+                value={newStaff.shiftStartTime}
+                onChange={(e) => setNewStaff({ ...newStaff, shiftStartTime: e.target.value })}
+                className="w-full focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 border rounded-xl px-3 py-1.5 text-sm">
+              <span className="text-xs text-slate-500">End:</span>
+              <input
+                type="time"
+                required
+                value={newStaff.shiftEndTime}
+                onChange={(e) => setNewStaff({ ...newStaff, shiftEndTime: e.target.value })}
+                className="w-full focus:outline-none"
+              />
+            </div>
+
             <input
               type="number"
               required
@@ -196,31 +300,32 @@ export default function AdminDashboard() {
               onChange={(e) => setNewStaff({ ...newStaff, rate: e.target.value })}
               className="border rounded-xl px-3 py-2 text-sm"
             />
+
             <button
               type="submit"
               disabled={creating}
               className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl px-4 py-2 text-sm"
             >
-              {creating ? "Adding..." : "+ Add Staff"}
+              {creating ? "Adding..." : "+ Add Staff & Schedule"}
             </button>
           </form>
         </div>
 
-        {/* Staff Variable Salary Configuration Table */}
+        {/* Staff Configuration Table */}
         <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
           <div className="p-5 border-b flex items-center gap-2 font-bold text-slate-800">
             <Users className="w-5 h-5 text-indigo-600" />
-            <span>Staff Compensation Configuration (Variable Pay Models)</span>
+            <span>Staff Schedules & Variable Compensation Rules</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-600 border-b">
                 <tr>
                   <th className="p-4">Staff Name</th>
-                  <th className="p-4">Pay Category (Option 1 / Option 2)</th>
+                  <th className="p-4">Category</th>
+                  <th className="p-4">Shift Schedule</th>
                   <th className="p-4">Variable Rate</th>
-                  <th className="p-4">OT Multiplier</th>
-                  <th className="p-4">Device Security</th>
+                  <th className="p-4">Device</th>
                   <th className="p-4 text-right">Actions</th>
                 </tr>
               </thead>
@@ -233,10 +338,10 @@ export default function AdminDashboard() {
                         <select
                           value={editForm.role}
                           onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
-                          className="border rounded-lg px-2.5 py-1.5 bg-white"
+                          className="border rounded-lg px-2 py-1 bg-white"
                         >
-                          <option value="INTERN">Option 1: Intern (Hourly)</option>
-                          <option value="EMPLOYEE">Option 2: Full-Time Job (Monthly)</option>
+                          <option value="INTERN">Option 1: Intern</option>
+                          <option value="EMPLOYEE">Option 2: Full-Time</option>
                         </select>
                       ) : (
                         <span
@@ -246,7 +351,34 @@ export default function AdminDashboard() {
                               : "bg-indigo-100 text-indigo-800"
                           }`}
                         >
-                          {staff.role === "INTERN" ? "Option 1: Intern" : "Option 2: Full-Time Job"}
+                          {staff.role === "INTERN" ? "Intern" : "Full-Time"}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      {editingId === staff.id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="time"
+                            value={editForm.shiftStartTime}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, shiftStartTime: e.target.value })
+                            }
+                            className="border rounded px-1.5 py-1 text-xs"
+                          />
+                          <span>-</span>
+                          <input
+                            type="time"
+                            value={editForm.shiftEndTime}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, shiftEndTime: e.target.value })
+                            }
+                            className="border rounded px-1.5 py-1 text-xs"
+                          />
+                        </div>
+                      ) : (
+                        <span className="font-medium text-slate-700">
+                          {staff.shiftStartTime || "10:00"} – {staff.shiftEndTime || "18:00"}
                         </span>
                       )}
                     </td>
@@ -256,33 +388,16 @@ export default function AdminDashboard() {
                           type="number"
                           value={editForm.rate}
                           onChange={(e) => setEditForm({ ...editForm, rate: e.target.value })}
-                          className="border rounded-lg px-2.5 py-1 w-28"
+                          className="border rounded-lg px-2 py-1 w-24"
                         />
                       ) : (
                         <span className="flex items-center">
                           <IndianRupee className="w-3.5 h-3.5" />
                           {staff.payConfig?.rate || 0}
                           <span className="text-slate-400 text-xs ml-1">
-                            {staff.role === "INTERN" ? "/ hr" : "/ month"}
+                            {staff.role === "INTERN" ? "/ hr" : "/ mo"}
                           </span>
                         </span>
-                      )}
-                    </td>
-                    <td className="p-4">
-                      {editingId === staff.id && editForm.role === "EMPLOYEE" ? (
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={editForm.overtimeMultiplier}
-                          onChange={(e) =>
-                            setEditForm({ ...editForm, overtimeMultiplier: e.target.value })
-                          }
-                          className="border rounded-lg px-2.5 py-1 w-20"
-                        />
-                      ) : staff.role === "EMPLOYEE" ? (
-                        `${staff.payConfig?.overtimeMultiplier || 1.5}x`
-                      ) : (
-                        <span className="text-slate-400">N/A</span>
                       )}
                     </td>
                     <td className="p-4">
@@ -291,7 +406,7 @@ export default function AdminDashboard() {
                         className="text-xs text-slate-600 hover:text-red-600 flex items-center gap-1 underline"
                       >
                         <Smartphone className="w-3.5 h-3.5" />
-                        {staff.boundDeviceId ? "Reset Bound Phone" : "Unbound"}
+                        {staff.boundDeviceId ? "Reset" : "Unbound"}
                       </button>
                     </td>
                     <td className="p-4 text-right">
@@ -307,7 +422,7 @@ export default function AdminDashboard() {
                           onClick={() => handleEditClick(staff)}
                           className="text-indigo-600 hover:text-indigo-800 font-semibold text-xs"
                         >
-                          Edit Pay Rules
+                          Edit Schedule & Pay
                         </button>
                       )}
                     </td>
@@ -318,16 +433,18 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Live Attendance & Variable Salary Logs */}
+        {/* Live Attendance, Punctuality & Salary Logs */}
         <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-          <div className="p-5 border-b font-bold text-slate-800">Live Attendance & Calculated Earnings</div>
+          <div className="p-5 border-b font-bold text-slate-800">
+            Live Attendance, Late Status & Admin Payroll Log
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-600 border-b">
                 <tr>
                   <th className="p-4">Date</th>
                   <th className="p-4">Staff Member</th>
-                  <th className="p-4">Category</th>
+                  <th className="p-4">Punctuality</th>
                   <th className="p-4">Duration</th>
                   <th className="p-4">Calculated Variable Pay</th>
                 </tr>
@@ -337,7 +454,17 @@ export default function AdminDashboard() {
                   <tr key={log.id}>
                     <td className="p-4 text-slate-600">{log.date}</td>
                     <td className="p-4 font-semibold">{log.userName}</td>
-                    <td className="p-4 text-xs font-semibold">{log.role}</td>
+                    <td className="p-4">
+                      {log.lateMinutes > 0 ? (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">
+                          Late by {log.lateMinutes} mins
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-700">
+                          On Time
+                        </span>
+                      )}
+                    </td>
                     <td className="p-4">
                       {log.checkOut ? (
                         `${log.totalMinutes} mins`
