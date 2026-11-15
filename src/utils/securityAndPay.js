@@ -1,7 +1,18 @@
-// 1. Haversine Formula to verify employee is physically inside the CA office
-export function isWithinOfficeRadius(userLat, userLng, officeLat, officeLng, maxMeters = 50) {
+// 1. Haversine Formula + Anti-Spoofing Accuracy Check
+export function isWithinOfficeRadius(position, officeLat, officeLng, maxMeters = 50) {
+  const { latitude: userLat, longitude: userLng, accuracy } = position.coords;
+
+  // Reject stale or low-precision mock GPS readings (> 65m accuracy)
+  if (accuracy && accuracy > 65) {
+    return {
+      allowed: false,
+      distance: 0,
+      reason: `Low GPS accuracy (${Math.round(accuracy)}m). Move near a window or turn off Mock Location apps.`
+    };
+  }
+
   const toRad = (val) => (val * Math.PI) / 180;
-  const R = 6371e3; // Earth radius in meters
+  const R = 6371e3;
   const dLat = toRad(officeLat - userLat);
   const dLon = toRad(officeLng - userLng);
 
@@ -10,9 +21,17 @@ export function isWithinOfficeRadius(userLat, userLng, officeLat, officeLng, max
     Math.cos(toRad(userLat)) * Math.cos(toRad(officeLat)) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const distance = R * c;
+  const distance = Math.round(R * c);
 
-  return { allowed: distance <= maxMeters, distance: Math.round(distance) };
+  if (distance > maxMeters) {
+    return {
+      allowed: false,
+      distance,
+      reason: `OUTSIDE OFFICE GEOFENCE: You are ${distance}m away (Max allowed: ${maxMeters}m).`
+    };
+  }
+
+  return { allowed: true, distance };
 }
 
 // 2. Dynamic QR Token Generator (Changes every 15 seconds)

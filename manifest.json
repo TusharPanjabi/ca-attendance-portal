@@ -1,0 +1,15 @@
+{
+  "short_name": "CA Attendance",
+  "name": "CA Firm QR Attendance & Payroll",
+  "start_url": "/login",
+  "display": "standalone",
+  "theme_color": "#0f172a",
+  "background_color": "#f8fafc",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3135/3135715.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
